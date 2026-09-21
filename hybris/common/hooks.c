@@ -328,11 +328,51 @@ static pthread_rwlock_t* hybris_alloc_init_rwlock(void)
  *
  * */
 
+/* Android's allocator zero-initialises heap allocations; glibc's does not.
+ * Blobs compiled against bionic are entitled to rely on that, and some do:
+ * Qualcomm's libar-pal.so has a constructor (SpeakerProtection) that never
+ * initialises one pointer member, then free()s it during teardown. Under
+ * bionic the member reads NULL and the free is skipped; under glibc it holds
+ * whatever the recycled block contained -- in one observed case eight bytes of
+ * XML text from a file expat had parsed into that block earlier -- and glibc
+ * faults walking a chunk header that was never its own.
+ *
+ * Zeroing here reproduces the allocator semantics the blob was built against,
+ * rather than filtering the resulting bad free()s afterwards. Set
+ * HYBRIS_DISABLE_MALLOC_ZERO_INIT=1 to opt out and measure the cost.
+ */
+static int hybris_malloc_zero_init(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+        enabled = getenv("HYBRIS_DISABLE_MALLOC_ZERO_INIT") == NULL;
+
+    return enabled;
+}
+
 static void *_hybris_hook_malloc(size_t size)
 {
     TRACE_HOOK("size %zu", size);
 
     void *res = malloc(size);
+
+    if (res != NULL && hybris_malloc_zero_init())
+        memset(res, 0, size);
+
+    TRACE_HOOK("res %p", res);
+
+    return res;
+}
+
+static void *_hybris_hook_memalign(size_t alignment, size_t size)
+{
+    TRACE_HOOK("alignment %zu size %zu", alignment, size);
+
+    void *res = memalign(alignment, size);
+
+    if (res != NULL && hybris_malloc_zero_init())
+        memset(res, 0, size);
 
     TRACE_HOOK("res %p", res);
 
@@ -344,6 +384,9 @@ static void *_hybris_hook_aligned_alloc(size_t alignment, size_t size)
     TRACE_HOOK("alignment %zu size %zu", alignment, size);
 
     void *res = aligned_alloc(alignment, size);
+
+    if (res != NULL && hybris_malloc_zero_init())
+        memset(res, 0, size);
 
     TRACE_HOOK("res %p", res);
 
@@ -2558,7 +2601,12 @@ static int _hybris_hook_posix_memalign(void **memptr, size_t alignment, size_t s
 {
     TRACE_HOOK("memptr %p alignment %zu size %zu", memptr, alignment, size);
 
-    return posix_memalign(memptr, alignment, size);
+    int res = posix_memalign(memptr, alignment, size);
+
+    if (res == 0 && *memptr != NULL && hybris_malloc_zero_init())
+        memset(*memptr, 0, size);
+
+    return res;
 }
 
 static pid_t _hybris_hook_fork(void)
@@ -2983,7 +3031,7 @@ static struct _hook hooks_common[] = {
     HOOK_DIRECT_NO_DEBUG(calloc),
     HOOK_DIRECT_NO_DEBUG(free),
     HOOK_DIRECT_NO_DEBUG(realloc),
-    HOOK_DIRECT_NO_DEBUG(memalign),
+    HOOK_INDIRECT(memalign),
     HOOK_DIRECT_NO_DEBUG(valloc),
     HOOK_DIRECT_NO_DEBUG(pvalloc),
     HOOK_DIRECT(fread),

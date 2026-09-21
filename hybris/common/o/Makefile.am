@@ -72,3 +72,18 @@ o_la_CPPFLAGS += \
 	-DWANT_ARM_TRACING
 endif
 
+# Allow LD_CONFIG_FILE to point the linker at an alternative ld.config.txt.
+#
+# AOSP gates this off outside debug builds because there the linker config is
+# a system integrity boundary. Under libhybris the linker runs inside a glibc
+# process the user already controls, next to LD_PRELOAD and LD_LIBRARY_PATH,
+# so it crosses no boundary those do not.
+#
+# Without it, a port that needs to extend a namespace -- typically adding VNDK
+# libraries to sphal.link.vndk.shared_libs so a vendor HAL can resolve its
+# dependencies -- has to bind-mount over /linkerconfig/ld.config.txt, which is
+# a runtime-generated tmpfs. That is a system-wide change made to fix a single
+# process. With this, the same port sets LD_CONFIG_FILE for that one process.
+o_la_CPPFLAGS += \
+	-DUSE_LD_CONFIG_FILE
+
